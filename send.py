@@ -1,29 +1,56 @@
+import argparse
+from ast import parse
 import sys
 import asyncio
 import json
-from time import time
+import time
+from datetime import datetime
 from nats.aio.client import Client as NATS
-from nats.aio.errors import ErrTimeout
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--env', '-e', action='store', type=str)
+parser.add_argument('--file', '-f', action='store', type=str)
+parser.add_argument('--request-num', '-n', action='store', type=int, default=1)
 
 
-async def run(loop_obj):
-    env = sys.argv[1]
-    data_filename = sys.argv[2]
+async def request(nc: NATS, subject, payload, timeout):
+    start_datetime = datetime.now()
+    start = time.perf_counter()
+    response = await nc.request(subject, payload, timeout=timeout)
+    total = time.perf_counter() - start
+    finished_datetime = datetime.now()
+    print(
+        response.data.decode(),
+        start_datetime,
+        finished_datetime,
+        'Req:', total
+    )
+    return response
+
+
+async def run(env: str, filename: str, req_num: str):
     configs = json.loads(open('configs.json', 'r').read())
     config = configs[env]
+    servers = config['nats']
+
+    print('NATS servers:', servers)
     
     nc = NATS()
-    await nc.connect(servers=config['nats'])
-    data = json.loads(open(data_filename, 'r').read())
+    await nc.connect(servers=servers)
+    data = json.loads(open(filename, 'r').read())
     subject = data['subject']
+    print('Subject:', subject)
     payload = json.dumps(data['payload']).encode()
 
-    start = time()
+    start = time.perf_counter()
     try:
-        response = await nc.request(subject, payload, timeout=10)
-        elapsed = time() - start
         print('--------------------')
-        print(response.data.decode())
+        requests = [
+            request(nc, subject, payload, timeout=40)
+            for _ in range(0, req_num)
+        ]
+        await asyncio.gather(*requests)
+        elapsed = time.perf_counter() - start
         print('--------------------')
         print('Timed:', elapsed)
         print('--------------------')
@@ -36,6 +63,7 @@ async def run(loop_obj):
 
 
 if __name__ == '__main__':
+    args = parser.parse_args()
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(run(loop))
+    loop.run_until_complete(run(args.env, args.file, args.request_num))
     loop.close()
